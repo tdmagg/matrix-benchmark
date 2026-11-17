@@ -3,7 +3,7 @@ from scipy.linalg import lu_factor
 from scipy.sparse import diags, kronsum
 from scipy.sparse.linalg import splu
 from time import perf_counter
-from statistics import median
+from statistics import median, mean
 
 
 def create_matrix(grid_size):
@@ -23,7 +23,7 @@ def create_matrix(grid_size):
     return kronsum(T, T, format="csc")
 
 
-def benchmark_dense(A, trials=10):
+def benchmark_dense(A, trials=1000):
     times = []
 
     for _ in range(trials):
@@ -38,7 +38,7 @@ def benchmark_dense(A, trials=10):
     return median(times)
 
 
-def benchmark_sparse(A, trials=10):
+def benchmark_sparse(A, trials=1000):
     times = []
 
     for _ in range(trials):
@@ -51,7 +51,7 @@ def benchmark_sparse(A, trials=10):
     return median(times)
 
 
-for grid_size in [10, 20, 30]:
+for grid_size in [5, 10, 15]:
 
     sparse_A = create_matrix(grid_size)
     dense_A = sparse_A.toarray(order="F")

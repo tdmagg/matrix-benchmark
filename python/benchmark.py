@@ -1,68 +1,121 @@
+import csv
+from pathlib import Path
+from statistics import median
+from time import perf_counter
+
 import numpy as np
 from scipy.linalg import lu_factor
-from scipy.sparse import diags, kronsum
+from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
-from time import perf_counter
-from statistics import median, mean
+
+TRIALS = 1000
+SIZES = [25 + (225 * i) // 49 for i in range(50)]
+
+def create_matrix(n):
+    # creates a sparse matrix. close to a banded pattern, but has varying offsets
+    A = 8.0 * np.eye(n)
+
+    offsets = (1, 7, n // 3)
+
+    for offset in offsets:
+        i = np.arange(n - offset)
+        A[i, i + offset] = -1.0
+        A[i + offset, i] = -1.0
+
+    return csc_matrix(A)
 
 
-def create_matrix(grid_size):
-    """Create a sparse, PD matrix."""
-    values = np.ones(grid_size) # creates a grid_size x 1 vector of ones
+def measure_dense(case):
+    np.copyto(case["work"], case["dense"]) # so we don't time/use the copy
 
-    # we create a grid_size x grid_size tridiagonal matrix 
-    # with 2 on the diagonal and -1 on the off-diagonals.
-    # we also store in a compressed format, useful for memory efficiency in sparse matrices
-    T = diags(
-        [-values[:-1], 2 * values, -values[:-1]],
-        [-1, 0, 1],
-        format="csc"
-    ) 
- 
-    # we use T to form a bigger grid_size^2 x grid_size^2 matrix
-    return kronsum(T, T, format="csc")
+    start = perf_counter()
+    lu_factor(
+        case["work"],
+        overwrite_a=True,
+        check_finite=False
+    )
+    return perf_counter() - start
 
 
-def benchmark_dense(A, trials=1000):
-    times = []
+def measure_sparse(case):
+    start = perf_counter()
 
-    for _ in range(trials):
-        work = A.copy(order="F") # we'll be working with column major arrays
+    factor = splu(case["sparse"], permc_spec="COLAMD")
+    del factor
 
-        start = perf_counter()
-        lu_factor(work, overwrite_a=True, check_finite=False) #overwrite prevents unnecessary copying, check_finite skips undefined checks
-        end = perf_counter()
-
-        times.append(end - start)
-
-    return median(times)
+    return perf_counter() - start
 
 
-def benchmark_sparse(A, trials=1000):
-    times = []
+def main():
+    cases = []
 
-    for _ in range(trials):
-        start = perf_counter()
-        splu(A)
-        end = perf_counter()
+    for n in SIZES:
+        sparse = create_matrix(n)
+        dense = sparse.toarray(order="F")
 
-        times.append(end - start)
+        case = {
+            "n": n,
+            "dense": dense,
+            "sparse": sparse,
+            "work": np.empty_like(dense, order="F"),
+            "dense_times": [],
+            "sparse_times": []
+        }
 
-    return median(times)
+        measure_dense(case)
+        measure_sparse(case)
+
+        cases.append(case)
+
+    for trial in range(TRIALS):
+
+        offset = (17 * trial) % len(cases)
+
+        for slot in range(len(cases)):
+            case = cases[(slot + offset) % len(cases)]
+
+            case["dense_times"].append(
+                measure_dense(case)
+            )
+
+            case["sparse_times"].append(
+                measure_sparse(case)
+            )
+
+        if (trial + 1) % 100 == 0:
+            print(
+                f"Completed {trial + 1}/{TRIALS} trials per size"
+            )
+
+    results = Path(__file__).resolve().parents[1] / "results"
+    results.mkdir(exist_ok=True)
+
+    with (results / "python_timings.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as file:
+
+        writer = csv.writer(file)
+        writer.writerow(["n", "dense_ms", "sparse_ms"])
+
+        for case in cases:
+            dense_ms = 1000 * median(case["dense_times"])
+            sparse_ms = 1000 * median(case["sparse_times"])
+
+            writer.writerow([
+                case["n"],
+                f"{dense_ms:.9f}",
+                f"{sparse_ms:.9f}"
+            ])
+
+            print(
+                f'{case["n"]:3d} x {case["n"]:<3d}  '
+                f"Dense: {dense_ms:.4f} ms  "
+                f"Sparse: {sparse_ms:.4f} ms  "
+                f"Dense/Sparse: {dense_ms / sparse_ms:.2f}x"
+            )
+
+    print("Saved results/python_timings.csv")
 
 
-for grid_size in [5, 10, 15]:
-
-    sparse_A = create_matrix(grid_size)
-    dense_A = sparse_A.toarray(order="F")
-
-    dense_time = benchmark_dense(dense_A)
-    sparse_time = benchmark_sparse(sparse_A)
-
-    n = dense_A.shape[0]
-
-    print(f"\nMatrix size: {n} x {n}")
-    print(f"Nonzero entries: {sparse_A.nnz}")
-    print(f"Dense LU:  {dense_time:.6f} seconds")
-    print(f"Sparse LU: {sparse_time:.6f} seconds")
-    print(f"Dense / Sparse: {dense_time / sparse_time:.2f}x")
+if __name__ == "__main__":
+    main()
